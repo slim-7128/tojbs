@@ -796,11 +796,19 @@ export default function App() {
     }
   };
 
-  const saveWork = () => {
+  const saveWork = async () => {
       localStorage.setItem('tojbs_invoices', JSON.stringify(invoices));
       localStorage.setItem('tojbs_bank', JSON.stringify(bankTransactions));
       localStorage.setItem('tojbs_pcm', JSON.stringify(pcmList));
       localStorage.setItem('tojbs_users', JSON.stringify(usersList));
+      
+      // Auto-sync to cloud if authenticated
+      if (isAuthenticated && currentUser) {
+          await handleSyncToCloud();
+      } else {
+          alert(lang === 'ar' ? 'تم الحفظ محلياً' : 'Sauvegardé localement');
+      }
+
       const backupData = {
           version: "1.0",
           timestamp: new Date().toISOString(),
