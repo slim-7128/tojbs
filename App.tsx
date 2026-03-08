@@ -551,6 +551,8 @@ export default function App() {
     if (!e.target.files?.length) return;
     setUploading(true);
     const files: File[] = Array.from(e.target.files);
+    let totalImported = 0;
+    
     try {
         // --- PLAN COMPTABLE ---
         if (activeTab === 'planComptable') {
@@ -558,34 +560,35 @@ export default function App() {
             const normalizeCode = (code: string) => {
                 const cleaned = code.replace(/\D/g, '');
                 if (!cleaned) return null;
-                // Pad with trailing zeros to reach 10 digits
                 return cleaned.padEnd(10, '0').substring(0, 10);
             };
 
             for (const file of files) {
-                if (file.name.match(/\.(xlsx|xls|csv)$/i)) {
-                    const excelData = await readExcelFile(file);
-                    const mappedData = excelData.map((row: any) => {
-                        const rawCode = String(findVal(row, ['Compte', 'Code', 'Numero']) || Object.values(row)[0] || "");
-                        const normalized = normalizeCode(rawCode);
-                        return {
-                            code: normalized,
-                            label: String(findVal(row, ['Intitulé', 'Libellé', 'Nom', 'Label']) || Object.values(row)[1] || "")
-                        };
-                    }).filter(acc => acc.code && acc.code.length === 10);
+                try {
+                    if (file.name.match(/\.(xlsx|xls|csv)$/i)) {
+                        const excelData = await readExcelFile(file);
+                        const mappedData = excelData.map((row: any) => {
+                            const rawCode = String(findVal(row, ['Compte', 'Code', 'Numero']) || Object.values(row)[0] || "");
+                            const normalized = normalizeCode(rawCode);
+                            return {
+                                code: normalized,
+                                label: String(findVal(row, ['Intitulé', 'Libellé', 'Nom', 'Label']) || Object.values(row)[1] || "")
+                            };
+                        }).filter(acc => acc.code && acc.code.length === 10);
 
-                    mappedData.forEach(item => {
-                         newAccounts.push({ ...item, class: parseInt(item.code!.charAt(0)) || 0 });
-                    });
-                } else {
-                    try {
+                        mappedData.forEach(item => {
+                             newAccounts.push({ ...item, class: parseInt(item.code!.charAt(0)) || 0 });
+                        });
+                    } else {
                         const results = await analyzePCM(file);
                         const validatedResults = results.map(item => ({
                             ...item,
                             code: normalizeCode(item.code)
                         })).filter(item => item.code && item.code.length === 10);
                         newAccounts.push(...validatedResults);
-                    } catch(e) { console.error(e); }
+                    }
+                } catch (err) {
+                    console.error(`Error processing PCM file ${file.name}:`, err);
                 }
             }
             if (newAccounts.length > 0) {
@@ -594,131 +597,152 @@ export default function App() {
                     const uniqueNew = newAccounts.filter(p => !existingCodes.has(p.code));
                     return [...prev, ...uniqueNew];
                 });
-                alert(`${newAccounts.length} comptes importés avec succès.`);
+                alert(lang === 'ar' ? `تم استيراد ${newAccounts.length} حساب بنجاح` : `${newAccounts.length} comptes importés avec succès.`);
             } else {
-                alert("Aucun compte n'a pu être extrait.");
+                alert(lang === 'ar' ? "لم يتم استخراج أي حساب" : "Aucun compte n'a pu être extrait.");
             }
             setUploading(false);
             return;
         }
 
         // --- BANK STATEMENTS ---
-        if (activeTab === 'bank') {
-            let count = 0;
+        if (activeTab === 'bank' || (activeTab === 'upload' && uploadType === 'purchase' && files[0].name.toLowerCase().includes('releve'))) {
+            // Note: Heuristic check if user uploads a bank statement in the upload tab
+            let bankCount = 0;
             for (const file of files) {
-                if (file.name.match(/\.(xlsx|xls|csv)$/i)) {
-                    const excelData = await readExcelFile(file);
-                    const transactionsWithId = excelData.map((row: any) => {
-                        const dateVal = String(findVal(row, ['Date', 'Opération', 'Jour']) || "");
-                        if (!dateVal) return null; // Skip invalid rows
+                try {
+                    if (file.name.match(/\.(xlsx|xls|csv)$/i)) {
+                        const excelData = await readExcelFile(file);
+                        const transactionsWithId = excelData.map((row: any) => {
+                            const dateVal = String(findVal(row, ['Date', 'Opération', 'Jour']) || "");
+                            if (!dateVal) return null;
 
-                        return {
-                            id: Math.random().toString(36).substr(2, 9),
-                            date: dateVal,
-                            description: String(findVal(row, ['Libellé', 'Libelle', 'Description', 'Opération']) || ""),
-                            reference: String(findVal(row, ['Référence', 'Ref', 'Reference', 'Piece']) || ""),
-                            debit: parseFloat(findVal(row, ['Débit', 'Debit', 'Sortie']) || 0) || 0,
-                            credit: parseFloat(findVal(row, ['Crédit', 'Credit', 'Entrée']) || 0) || 0,
-                            contraAccount: String(findVal(row, ['Contre partie', 'Compte', 'C.Partie']) || "4710000000"),
-                            user_id: 'local'
-                        };
-                    }).filter(t => t !== null) as BankTransaction[];
+                            return {
+                                id: Math.random().toString(36).substr(2, 9),
+                                date: dateVal,
+                                description: String(findVal(row, ['Libellé', 'Libelle', 'Description', 'Opération']) || ""),
+                                reference: String(findVal(row, ['Référence', 'Ref', 'Reference', 'Piece']) || ""),
+                                debit: parseFloat(findVal(row, ['Débit', 'Debit', 'Sortie']) || 0) || 0,
+                                credit: parseFloat(findVal(row, ['Crédit', 'Credit', 'Entrée']) || 0) || 0,
+                                contraAccount: String(findVal(row, ['Contre partie', 'Compte', 'C.Partie']) || "4710000000")
+                            };
+                        }).filter(t => t !== null) as BankTransaction[];
 
-                    if (transactionsWithId.length > 0) {
-                        setBankTransactions(prev => [...transactionsWithId, ...prev]);
-                        count += transactionsWithId.length;
-                    }
-                } else {
-                    try {
-                        const results = await analyzeBankStatement(file);
-                        const transactionsWithId = results.map(t => ({ 
-                            ...t, 
-                            id: Math.random().toString(36).substr(2, 9), 
-                            user_id: 'local' 
-                        }));
                         if (transactionsWithId.length > 0) {
                             setBankTransactions(prev => [...transactionsWithId, ...prev]);
-                            count += transactionsWithId.length;
+                            bankCount += transactionsWithId.length;
                         }
-                    } catch (err) { console.error(err); }
+                    } else {
+                        const results = await analyzeBankStatement(file);
+                        if (results && results.length > 0) {
+                            const transactionsWithId = results.map(t => ({ 
+                                ...t, 
+                                id: Math.random().toString(36).substr(2, 9)
+                            }));
+                            setBankTransactions(prev => [...transactionsWithId, ...prev]);
+                            bankCount += transactionsWithId.length;
+                        }
+                    }
+                } catch (err) {
+                    console.error(`Error processing bank file ${file.name}:`, err);
                 }
             }
-            if (count === 0) alert("Aucune transaction n'a été importée. Vérifiez le format (Colonnes: Date, Libellé, Débit, Crédit).");
-            else alert(`${count} transaction(s) importée(s).`);
+            if (bankCount > 0) {
+                alert(lang === 'ar' ? `تم استيراد ${bankCount} عملية بنجاح` : `${bankCount} transaction(s) importée(s).`);
+                if (activeTab === 'upload') setActiveTab('bank');
+            } else {
+                alert(lang === 'ar' ? "فشل استيراد العمليات البنكية" : "Aucune transaction n'a été importée. Vérifiez le format.");
+            }
             setUploading(false);
             return;
         }
 
         // --- INVOICES (Purchases/Sales) ---
         const invoiceType = uploadType;
-        let count = 0;
+        let invoiceCount = 0;
         for (const file of files) {
-            if (file.name.match(/\.(xlsx|xls|csv)$/i)) {
-                const excelData = await readExcelFile(file);
-                const newInvoices = excelData.map((row: any) => {
-                    const dateVal = String(findVal(row, ['Date', 'Facturé le']) || "");
-                    const amountTTC = parseFloat(findVal(row, ['TTC', 'Total', 'Net à payer', 'Montant TTC']) || 0) || 0;
-                    
-                    if (!dateVal || amountTTC === 0) return null; // Skip invalid rows
+            try {
+                if (file.name.match(/\.(xlsx|xls|csv)$/i)) {
+                    const excelData = await readExcelFile(file);
+                    const newInvoices = excelData.map((row: any) => {
+                        const dateVal = String(findVal(row, ['Date', 'Facturé le']) || "");
+                        const amountTTC = parseFloat(findVal(row, ['TTC', 'Total', 'Net à payer', 'Montant TTC']) || 0) || 0;
+                        
+                        if (!dateVal || amountTTC === 0) return null;
 
-                    return {
-                        id: Math.random().toString(36).substr(2, 9),
-                        fileName: file.name,
-                        vendor: String(findVal(row, ['Fournisseur', 'Client', 'Tiers', 'Nom']) || "Inconnu"),
-                        date: dateVal,
-                        ice: String(findVal(row, ['ICE', 'Identifiant']) || ""),
-                        if_fiscal: String(findVal(row, ['IF', 'Fiscal']) || ""),
-                        amountHT: parseFloat(findVal(row, ['HT', 'Net', 'Base', 'Hors Taxe']) || 0) || 0,
-                        amountTTC: amountTTC,
-                        tvaRate: "20%",
-                        tvaBreakdown: [],
-                        category: String(findVal(row, ['Catégorie', 'Type']) || "Divers"),
-                        invoiceNumber: String(findVal(row, ['N°', 'Numéro', 'Reference', 'Piece']) || ""),
-                        status: 'processed',
-                        type: invoiceType,
-                        timestamp: Date.now()
-                    };
-                }).filter(inv => inv !== null) as Invoice[];
-                
-                if (newInvoices.length > 0) {
-                    setInvoices(prev => [...newInvoices, ...prev]); 
-                    count += newInvoices.length;
-                }
-            } else {
-                try {
+                        return {
+                            id: Math.random().toString(36).substr(2, 9),
+                            fileName: file.name,
+                            vendor: String(findVal(row, ['Fournisseur', 'Client', 'Tiers', 'Nom']) || "Inconnu"),
+                            date: dateVal,
+                            ice: String(findVal(row, ['ICE', 'Identifiant']) || ""),
+                            if_fiscal: String(findVal(row, ['IF', 'Fiscal']) || ""),
+                            amountHT: parseFloat(findVal(row, ['HT', 'Net', 'Base', 'Hors Taxe']) || 0) || 0,
+                            amountTTC: amountTTC,
+                            tvaRate: "20%",
+                            tvaBreakdown: [],
+                            category: String(findVal(row, ['Catégorie', 'Type']) || "Divers"),
+                            invoiceNumber: String(findVal(row, ['N°', 'Numéro', 'Reference', 'Piece']) || ""),
+                            status: 'processed',
+                            type: invoiceType,
+                            timestamp: Date.now()
+                        };
+                    }).filter(inv => inv !== null) as Invoice[];
+                    
+                    if (newInvoices.length > 0) {
+                        setInvoices(prev => [...newInvoices, ...prev]); 
+                        invoiceCount += newInvoices.length;
+                    }
+                } else {
                     const result = await analyzeInvoice(file, invoiceType);
-                    const invoicePayload = {
-                        id: Math.random().toString(36).substr(2, 9),
-                        fileName: file.name,
-                        vendor: result.vendor || "Inconnu",
-                        date: result.date || "",
-                        ice: result.ice || "",
-                        if_fiscal: result.if_fiscal || "",
-                        amountHT: result.amountHT || 0,
-                        amountTTC: result.amountTTC || 0,
-                        tvaRate: (result.tvaRate as any) || "20%",
-                        tvaBreakdown: result.tvaBreakdown || [],
-                        category: result.category || "",
-                        invoiceNumber: result.invoiceNumber || "",
-                        status: 'processed',
-                        type: invoiceType,
-                        timestamp: Date.now()
-                    };
-                    setInvoices(prev => [invoicePayload as Invoice, ...prev]); 
-                    count++;
-                } catch (err) {
-                    console.error(err);
+                    if (result.status !== 'error') {
+                        const invoicePayload = {
+                            id: Math.random().toString(36).substr(2, 9),
+                            fileName: file.name,
+                            vendor: result.vendor || "Inconnu",
+                            date: result.date || "",
+                            ice: result.ice || "",
+                            if_fiscal: result.if_fiscal || "",
+                            amountHT: result.amountHT || 0,
+                            amountTTC: result.amountTTC || 0,
+                            tvaRate: (result.tvaRate as any) || "20%",
+                            tvaBreakdown: result.tvaBreakdown || [],
+                            category: result.category || "",
+                            invoiceNumber: result.invoiceNumber || "",
+                            status: 'processed',
+                            type: invoiceType,
+                            timestamp: Date.now()
+                        };
+                        setInvoices(prev => [invoicePayload as Invoice, ...prev]); 
+                        invoiceCount++;
+                    } else {
+                        console.warn(`AI failed to analyze ${file.name}`);
+                    }
                 }
+            } catch (err) {
+                console.error(`Error processing invoice file ${file.name}:`, err);
             }
         }
-        if (count === 0 && files.length > 0) alert("Aucune facture n'a été importée. Vérifiez vos fichiers.");
-        else if (count > 0) alert(`${count} facture(s) importée(s) avec succès.`);
+        
+        if (invoiceCount > 0) {
+            alert(lang === 'ar' ? `تم استيراد ${invoiceCount} فاتورة بنجاح` : `${invoiceCount} facture(s) importée(s) avec succès.`);
+            if (activeTab === 'upload') {
+                setActiveTab(invoiceType === 'purchase' ? 'invoices' : 'clients');
+            }
+        } else if (files.length > 0) {
+            alert(lang === 'ar' ? "لم يتم استيراد أي فاتورة. تأكد من جودة الملفات" : "Aucune facture n'a été importée. Vérifiez vos fichiers.");
+        }
 
-        setUploading(false);
     } catch (error) {
         console.error("Global upload error:", error);
-        alert("Erreur lors de l'importation. Vérifiez vos fichiers.");
+        alert(lang === 'ar' ? "حدث خطأ أثناء الاستيراد" : "Erreur lors de l'importation. Vérifiez vos fichiers.");
+    } finally {
         setUploading(false);
+        // Reset file inputs
+        const inputs = document.querySelectorAll('input[type="file"]');
+        inputs.forEach(input => {
+            (input as HTMLInputElement).value = '';
+        });
     }
   };
 
@@ -1826,15 +1850,35 @@ export default function App() {
                 <h3 className="text-2xl font-bold mb-2">{t.uploadTitle}</h3>
                 <p className="text-gray-400 mb-8 max-w-md text-center">{t.uploadSubtitle}</p>
                 
-                <div className="flex gap-4">
-                    <label className="cursor-pointer bg-primary hover:bg-blue-600 text-white px-8 py-3 rounded-xl font-medium transition-all transform hover:scale-105 shadow-lg shadow-primary/25">
+                <div className="flex flex-col items-center gap-6">
+                    <div className="flex bg-gray-900 p-1 rounded-xl border border-gray-800">
+                        <button 
+                            onClick={() => setUploadType('purchase')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${uploadType === 'purchase' ? 'bg-primary text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+                        >
+                            {lang === 'ar' ? 'مشتريات' : 'Achats'}
+                        </button>
+                        <button 
+                            onClick={() => setUploadType('sale')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${uploadType === 'sale' ? 'bg-primary text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+                        >
+                            {lang === 'ar' ? 'مبيعات' : 'Ventes'}
+                        </button>
+                    </div>
+
+                    <label className="cursor-pointer bg-primary hover:bg-blue-600 text-white px-12 py-4 rounded-xl font-bold transition-all transform hover:scale-105 shadow-xl shadow-primary/25 flex items-center gap-3">
+                        <Plus size={20} />
                         {t.importBtn}
                         <input type="file" multiple className="hidden" onChange={handleFileUpload} />
                     </label>
+                    
+                    <p className="text-xs text-gray-500 text-center">
+                        {lang === 'ar' 
+                          ? 'سيتم استيراد الملفات كـ ' 
+                          : 'Les fichiers seront importés en tant que '}
+                        <span className="text-primary font-bold uppercase">{uploadType === 'purchase' ? (lang === 'ar' ? 'مشتريات' : 'Achats') : (lang === 'ar' ? 'مبيعات' : 'Ventes')}</span>
+                    </p>
                 </div>
-                <p className="mt-4 text-sm text-gray-500">
-                    Destination: <span className="text-white font-medium">{uploadType === 'purchase' ? 'Achats' : 'Ventes'}</span>
-                </p>
             </div>
           )}
           
