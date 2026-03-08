@@ -1,0 +1,5 @@
+{
+  "name": "ToJbs",
+  "description": "Un assistant intelligent de facturation marocaine avec OCR, gestion de TVA et base de données fournisseurs par SLIMANE CHAGRI.",
+  "requestFramePermissions": []
+}
