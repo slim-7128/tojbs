@@ -38,7 +38,9 @@ import {
   ArrowLeft,
   Database,
   AlertTriangle,
-  SaveAll
+  SaveAll,
+  Cloud,
+  RefreshCw
 } from 'lucide-react';
 import { Invoice, Language, Vendor, BankTransaction } from './types';
 import { TRANSLATIONS } from './constants';
@@ -236,6 +238,7 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'invoices' | 'vendors' | 'upload' | 'clients' | 'bank' | 'planComptable' | 'users' | 'settings'>('dashboard');
   const [uploadType, setUploadType] = useState<'purchase' | 'sale'>('purchase');
@@ -417,11 +420,27 @@ export default function App() {
   }, [activeTab, currentUserRole]);
 
   // --- Handlers ---
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     setAuthLoading(true);
-    setTimeout(() => {
+    
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      if (data.user) {
+        setIsAuthenticated(true);
+        setCurrentUser(data.user.email || '');
+        localStorage.setItem('tojbs_auth', 'true');
+        localStorage.setItem('tojbs_user_email', data.user.email || '');
+      }
+    } catch (err: any) {
+        // Fallback to demo accounts for ease of testing
         if ((email === 'demo@example.com' && password === 'Admin') || 
             (email === 'ppmi@tojbs.com' && password === 'PPMI') || 
             (email === 'maprelec@tojbs.com' && password === 'MAPRELEC')) {
@@ -430,15 +449,16 @@ export default function App() {
             localStorage.setItem('tojbs_auth', 'true');
             localStorage.setItem('tojbs_user_email', email);
         } else {
-            setAuthError(lang === 'ar' 
-              ? 'بيانات غير صحيحة. حاول: demo@example.com / ppmi@tojbs.com / maprelec@tojbs.com' 
-              : 'Identifiants incorrects. (Essayez demo@example.com, ppmi@tojbs.com ou maprelec@tojbs.com)');
+            setAuthError(err.message || (lang === 'ar' 
+              ? 'بيانات غير صحيحة.' 
+              : 'Identifiants incorrects.'));
         }
-        setAuthLoading(false);
-    }, 800);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
-  const handleSignup = (e: React.FormEvent) => {
+  const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     setAuthLoading(true);
@@ -447,14 +467,23 @@ export default function App() {
         setAuthLoading(false);
         return;
     }
-    setTimeout(() => {
-        alert("Compte créé localement. Vous pouvez vous connecter.");
-        setAuthView('login');
-        setAuthLoading(false);
-    }, 800);
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+      if (error) throw error;
+      alert(lang === 'ar' ? 'تم إنشاء الحساب! يرجى التحقق من بريدك الإلكتروني' : 'Compte créé ! Veuillez vérifier votre email.');
+      setAuthView('login');
+    } catch (err: any) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setIsAuthenticated(false);
     setCurrentUser('');
     localStorage.removeItem('tojbs_auth');
@@ -462,6 +491,61 @@ export default function App() {
     setAuthView('login');
     setActiveTab('dashboard');
   };
+
+  const handleSyncToCloud = async () => {
+    if (!currentUser) {
+        alert(lang === 'ar' ? 'يرجى تسجيل الدخول للمزامنة' : 'Veuillez vous connecter pour synchroniser');
+        return;
+    }
+    setSyncing(true);
+    try {
+      const { error } = await supabase
+        .from('user_data')
+        .upsert({ 
+          email: currentUser, 
+          invoices: JSON.stringify(invoices),
+          bank_transactions: JSON.stringify(bankTransactions),
+          pcm_list: JSON.stringify(pcmList),
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'email' });
+
+      if (error) throw error;
+      alert(lang === 'ar' ? 'تمت المزامنة بنجاح مع السحابة' : 'Synchronisation réussie avec le cloud');
+    } catch (err: any) {
+      console.error("Sync error:", err);
+      alert(lang === 'ar' ? 'فشلت المزامنة. تأكد من إعداد Supabase' : 'Échec de la synchronisation. Vérifiez la configuration Supabase');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    const loadCloudData = async () => {
+      if (!currentUser || !isAuthenticated) return;
+      setDataLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('user_data')
+          .select('*')
+          .eq('email', currentUser)
+          .single();
+
+        if (data && !error) {
+          if (data.invoices) setInvoices(JSON.parse(data.invoices));
+          if (data.bank_transactions) setBankTransactions(JSON.parse(data.bank_transactions));
+          if (data.pcm_list) setPcmList(JSON.parse(data.pcm_list));
+        }
+      } catch (err) {
+        console.error("Error loading cloud data:", err);
+      } finally {
+        setDataLoading(false);
+      }
+    };
+
+    if (isAuthenticated) {
+      loadCloudData();
+    }
+  }, [isAuthenticated, currentUser]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
@@ -1004,7 +1088,7 @@ export default function App() {
                                 className="w-full flex items-center justify-center px-4 py-3 border border-gray-700 rounded-xl shadow-sm bg-surface hover:bg-gray-800 text-sm font-medium text-white transition-all hover:border-primary group"
                             >
                                 <UserPlus className="h-5 w-5 mr-2 text-gray-400 group-hover:text-primary transition-colors" />
-                                {lang === 'ar' ? 'إنشاء حساب محلي' : 'Créer un compte local'}
+                                {lang === 'ar' ? 'إنشاء حساب جديد' : 'Créer un compte'}
                             </button>
                         </div>
                     </>
@@ -1063,6 +1147,17 @@ export default function App() {
           <h2 className="text-xl font-semibold">{t[activeTab]}</h2>
           
           <div className="flex items-center space-x-4">
+            <button 
+              onClick={handleSyncToCloud}
+              disabled={syncing}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                syncing ? 'bg-gray-800 text-gray-500' : 'bg-primary/10 text-primary hover:bg-primary/20'
+              }`}
+              title={lang === 'ar' ? 'مزامنة مع السحابة' : 'Synchroniser avec le cloud'}
+            >
+              {syncing ? <RefreshCw size={16} className="animate-spin" /> : <Cloud size={16} />}
+              <span className="hidden sm:inline">{lang === 'ar' ? 'مزامنة' : 'Sync'}</span>
+            </button>
             <button 
               onClick={() => setLang(prev => prev === 'fr' ? 'ar' : 'fr')}
               className="p-2 rounded-full hover:bg-gray-700 text-gray-400 transition-colors"
